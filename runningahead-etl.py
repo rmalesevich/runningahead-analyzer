@@ -6,18 +6,41 @@ import duckdb
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 
+import logging
+from logging.handlers import RotatingFileHandler
+
+# Setup the Logger
+def setup_logger():
+    """
+    Configure the Logger for persistence of logs when run in an automated fashion.
+    """
+    logging.basicConfig(
+        handlers=[RotatingFileHandler(config.LOGGING_FILE, maxBytes=config.LOGGING_MAXBYTES, backupCount=config.LOGGING_BACKUPCOUNT)],
+        level = config.LOGGING_LEVEL,
+        format = config.LOGGING_FORMAT,
+        datefmt = config.LOGGING_DATEFMT
+    )
+
+    return logging.getLogger()
+
 # Cleanup any files on the file system
-def cleanup_filesystem(zip_file, extract_folder):
+def cleanup_filesystem(logger, zip_file, extract_folder):
     """
     This function deletes the ZIP file (if it exists) and any extracted files from the ZIP file.
     """
+    logger.debug('cleanup_filesystem started')
+
     if os.path.exists(zip_file):
         os.remove(zip_file)
+        logger.debug("{0} file deleted.".format(zip_file))
     if os.path.exists(extract_folder):
         shutil.rmtree(extract_folder)
+        logger.debug("{0} folder and contents deleted.".format(extract_folder))
+
+    logger.debug('cleanup_filesystem finished')
 
 # Export the log details from RunningAHEAD
-def download_log_from_ra(ra_user, ra_pass, ra_id):
+def download_log_from_ra(logger, ra_user, ra_pass, ra_id, second_limit):
     """
     This function uses Selenium, specifically with the Chrome Webdriver to navigate the RunningAHEAD.com website to:
     - Log in with the passed in username and password
@@ -31,27 +54,37 @@ def download_log_from_ra(ra_user, ra_pass, ra_id):
 
     driver.get("https://www.runningahead.com/")
 
+    logger.debug('RunningAHEAD website launched through the Chrome webdriver.')
+
     driver.find_element(By.ID, "ctl00_ctl00_ctl00_SiteContent_PageContent_MainContent_email").send_keys(ra_user)
     driver.find_element(By.ID, "ctl00_ctl00_ctl00_SiteContent_PageContent_MainContent_password").send_keys(ra_pass)
     driver.find_element(By.ID, "ctl00_ctl00_ctl00_SiteContent_PageContent_MainContent_login_s").click()
 
+    logger.debug('Login to RunningAHEAD initiated.')
+
     driver.get("https://www.runningahead.com/logs/" + ra_id + "/tools/export")
     driver.find_element(By.ID, "ctl00_ctl00_ctl00_SiteContent_PageContent_TrainingLogContent_Download_s").click()
 
-    time.sleep(10)
+    logger.debug('Export file download started.')
+
+    time.sleep(second_limit)
     driver.quit()
 
+    logger.debug("Function stopped after {0} seconds. Hopefully it succeeded!".format(second_limit))
+
 # Preprocess the ZIP File
-def preprocess_ra_file(zip_file, extract_folder):
+def preprocess_ra_file(logger, zip_file, extract_folder):
     """
     The file downloaded from RunningAHEAD must be unzipped and then cleaned because the header of the TSV file contains an extra tab character.
     """
     with zipfile.ZipFile(zip_file, 'r') as zip_ref:
         zip_ref.extractall(extract_folder)
+        logger.debug("{0} file extracted to {1}".format(zip_file, extract_folder))
 
     log_file = extract_folder + "log.txt"
     with open(log_file, "r") as f:
         lines = f.readlines()
+        logger.debug("{0} file opened for preprocessing.".format(log_file))
     
     new_header = ''.join(lines[0].rsplit("\t", 1))
 
@@ -64,13 +97,16 @@ def preprocess_ra_file(zip_file, extract_folder):
                 f.write(line + "\n")
             count = count + 1
 
+        logger.debug("{0} file preprocessed successfully.".format(log_file))
+
     return log_file
 
-def process_to_duckdb(db_file, log_file):
+def process_to_duckdb(logger, db_file, log_file):
     """
     The ETL processor will re-create the database each time. The volume of data is minimal. It was determined, it's not worth the overhead to use delta loading.
     """
     connection = duckdb.connect(database=db_file)
+    logger.debug("{0} database file opened".format(db_file))
 
     # Create the Conversion Table
     connection.sql("""
@@ -82,6 +118,7 @@ def process_to_duckdb(db_file, log_file):
             SELECT 'Meter', 0.0006213712
         """
     )
+    logger.debug("Unit_Conversion Table created.")
 
     # Store the TSV data to the primary log table
     connection.sql("""
@@ -97,6 +134,7 @@ def process_to_duckdb(db_file, log_file):
             LEFT JOIN Unit_Conversion u ON l.DistanceUnit = u.Unit
             WHERE Type = 'Run'
     """.format(log_file))
+    logger.debug("Log Table created.")
 
     # Create a Daily Log Table
     connection.sql("""
@@ -135,6 +173,7 @@ def process_to_duckdb(db_file, log_file):
                 , Duration_Seconds
             FROM streak_groups;
     """)
+    logger.debug("Daily_log Table created.")
 
     # Create a Calendar Table to assist in future analysis
     connection.sql("""
@@ -166,38 +205,17 @@ def process_to_duckdb(db_file, log_file):
                 , quarter(date) AS Date_Quarter
             FROM d
     """)
-
-def get_run_streaks(db_file, minimum_days = 10):
-    """
-    Temporary function to output the streaks greater than the minimum_days.
-    """
-    connection = duckdb.connect(database=db_file)
-
-    streaks = connection.sql("""
-        SELECT
-            Streak_ID
-            , min(Date) AS Start_of_Streak
-            , max(Date) AS Last_Day_of_Streak
-            , round(sum(Distance_Miles), 2) AS Total_Distance
-            , max(Streak_Count) AS Total_Days
-        FROM Daily_Log
-        GROUP BY
-            Streak_ID
-        HAVING total_days > {0}
-        ORDER BY Total_Days DESC, Last_Day_of_Streak ASC
-        """.format(minimum_days)
-    )
-    print(streaks)
+    logger.debug("Calendar Table created.")
 
 # ETL Controller
-if __name__ == "__main__":    
-    cleanup_filesystem(config.DOWNLOAD_FILE, config.EXTRACT_FOLDER)
+if __name__ == "__main__":
+    logger = setup_logger()
+
+    cleanup_filesystem(logger, config.DOWNLOAD_FILE, config.EXTRACT_FOLDER)
     
-    download_log_from_ra(config.RA_USER, config.RA_PASS, config.RA_ID)
+    download_log_from_ra(logger, config.RA_USER, config.RA_PASS, config.RA_ID, config.SECOND_LIMIT)
 
-    log_file = preprocess_ra_file(config.DOWNLOAD_FILE, config.EXTRACT_FOLDER)
-    process_to_duckdb(config.DATABASE_NAME, log_file)
+    log_file = preprocess_ra_file(logger, config.DOWNLOAD_FILE, config.EXTRACT_FOLDER)
+    process_to_duckdb(logger, config.DATABASE_NAME, log_file)
 
-    cleanup_filesystem(config.DOWNLOAD_FILE, config.EXTRACT_FOLDER)
-
-    get_run_streaks(config.DATABASE_NAME, minimum_days=10)
+    cleanup_filesystem(logger, config.DOWNLOAD_FILE, config.EXTRACT_FOLDER)
