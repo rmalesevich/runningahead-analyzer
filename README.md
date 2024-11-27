@@ -2,6 +2,12 @@
 
 ## runningahead-etl.py
 
+Ensure the Chrome webdriver is installed. Easiest method is through brew.
+
+```sh
+brew install --cask chromedriver
+```
+
 To configure the script, ensure venv is installed. Then run the following script:
 
 ```sh
@@ -15,13 +21,11 @@ Install pip requirements:
 pip install -r requirements.txt
 ```
 
-Ensure the Chrome webdriver is installed. Easiest method is through brew.
+Copy the .env-example to a .env file and set the right parameters.
 
 ```sh
-brew install --cask chromedriver
+cp .env-example .env
 ```
-
-Copy the .env-example to a .env file and set the right parameters.
 
 - RA_USER= Username for the RunningAHEAD website.
 - RA_PASS= Password for the RunningAHEAD website.
@@ -30,3 +34,9 @@ Copy the .env-example to a .env file and set the right parameters.
 - PRIMARY_FOLDER= The entire path to the folder where the ZIP file is downloaded from RA.
 - DATABASE_FILE= The entire path of the DuckDB database file.
 - LOG_FILE= The path where the log files will be saved.
+
+## analysis.py
+
+This script is provided to illustrate some of the queries that can be executed through the DuckDB database.
+
+The database is persisted so it can be read in other scripts or other tools.
